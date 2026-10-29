@@ -9,10 +9,11 @@ let server;
 
 async function start() {
   try {
+    await db.connect();
     await db.checkConnection();
-    logger.info('MySQL connection verified');
+    logger.info('MongoDB connection verified');
   } catch (err) {
-    logger.error('Failed to connect to MySQL on startup', { error: err.message });
+    logger.error('Failed to connect to MongoDB on startup', { error: err.message });
     process.exit(1);
   }
 
@@ -38,10 +39,10 @@ async function shutdown(signal) {
   }
 
   try {
-    await db.closePool();
-    logger.info('MySQL pool closed');
+    await db.disconnect();
+    logger.info('MongoDB connection closed');
   } catch (err) {
-    logger.error('Error closing MySQL pool', { error: err.message });
+    logger.error('Error closing MongoDB connection', { error: err.message });
   }
 
   try {

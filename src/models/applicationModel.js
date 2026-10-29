@@ -1,18 +1,21 @@
 // src/models/applicationModel.js
-const db = require('../config/db');
+const { Application } = require('../db/schemas');
+const { toObjectId, toPlain } = require('../utils/mongo');
 
 async function findByCode(code) {
-  const rows = await db.query('SELECT * FROM applications WHERE code = :code LIMIT 1', { code });
-  return rows[0] || null;
+  if (typeof code !== 'string') return null;
+  return toPlain(await Application.findOne({ code }).lean());
 }
 
 async function findById(id) {
-  const rows = await db.query('SELECT * FROM applications WHERE id = :id LIMIT 1', { id });
-  return rows[0] || null;
+  const _id = toObjectId(id);
+  if (!_id) return null;
+  return toPlain(await Application.findById(_id).lean());
 }
 
 async function listActive() {
-  return db.query('SELECT * FROM applications WHERE is_active = 1');
+  const rows = await Application.find({ is_active: true }).lean();
+  return rows.map(toPlain);
 }
 
 module.exports = { findByCode, findById, listActive };

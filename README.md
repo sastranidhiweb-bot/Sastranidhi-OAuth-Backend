@@ -41,12 +41,14 @@ and wasn't verified.
 ## What's implemented so far
 
 - Express app with security middleware (helmet, CORS allow-list, rate
-  limiting), Redis-backed SSO session, MySQL connection pool, Winston
+  limiting), Redis-backed SSO session, MongoDB (Mongoose) connection, Winston
   logging, health checks.
-- Full MySQL schema: `users`, `applications`, `oauth_clients`, `roles`,
-  `permissions`, `role_permissions`, `user_roles`, `user_sessions`,
-  `refresh_tokens`, `audit_logs` (this last one is an addition beyond the
-  architecture doc's table list, backing "Admin Features → Audit Logs").
+- MongoDB collections (`src/db/schemas.js`): `users`, `applications`,
+  `oauth_clients`, `roles` (each role stores its permission codes),
+  `permissions`, `user_roles`, `user_sessions`, `refresh_tokens`,
+  `audit_logs`, `user_identities`, `mfa_recovery_codes`,
+  `email_verifications`, `password_resets`. The server originally used
+  MySQL; the collections keep the old table and column names.
 - Passport local strategy (bcrypt, account locking after 5 failed logins).
 - OAuth2 Authorization Code flow (`GET /oauth/authorize`, `POST
   /oauth/token`, `POST /oauth/revoke`) with Redis-stored single-use codes,
@@ -73,7 +75,8 @@ and wasn't verified.
 
 ## Prerequisites
 
-- Node.js 18+, a running MySQL 8 instance, a running Redis instance.
+- Node.js 18+, a MongoDB database (local or MongoDB Atlas), a running Redis
+  instance (for local development: `docker run -d -p 6379:6379 redis:7`).
 
 ## Setup
 
@@ -83,7 +86,9 @@ cp .env.example .env
 ```
 
 Edit `.env`:
-- `DB_*` / `REDIS_*` — match your local services
+- `MONGODB_URI` — your MongoDB connection string; the database name is the
+  path after the host (e.g. `.../sastranidhi-outh?...`)
+- `REDIS_*` — match your Redis
 - `SESSION_SECRET` — any long random string
 - `ISSUER` — see note below
 
@@ -107,13 +112,11 @@ would publish the new key in the JWKS `keys` array *alongside* the old one
 for a transition window; this server only supports a single active key
 today — multi-key rotation is a reasonable future enhancement, not built.
 
-Create the database:
+There's no separate "create the database" step: MongoDB creates the
+database named in `MONGODB_URI` on first write.
 
-```sql
-CREATE DATABASE sastranidhi_oauth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-Migrate, seed, register a test client, and start the server:
+Create the collections and indexes, seed, register a test client, and start
+the server:
 
 ```bash
 npm run db:migrate
@@ -182,7 +185,7 @@ python3 -c "import json,base64,sys; p=sys.argv[1].split('.')[1]; p+='='*(-len(p)
 `access_token` payload:
 ```json
 {
-  "sub": 1,
+  "sub": "671f3a2b9c1e4d5f6a7b8c9d",
   "email": "dev@sastranidhi.org",
   "username": "devuser",
   "apps": { "LMS": ["TEACHER"], "PARIPRASHNA": ["STUDENT"] },
@@ -191,8 +194,8 @@ python3 -c "import json,base64,sys; p=sys.argv[1].split('.')[1]; p+='='*(-len(p)
   "aud": "PARIPRASHNA"
 }
 ```
-(`apps` is `{}` until you assign roles via `user_roles` directly — there's
-no admin API for that yet, that's module 4.)
+(`sub` is the user's MongoDB id, a 24-character string. `apps` is `{}`
+until roles are assigned — see the Admin APIs below.)
 
 `id_token` payload additionally has `nonce` (echoing what you sent to
 `/oauth/authorize`) and, since scope included `profile`/`email`:
@@ -367,8 +370,8 @@ To test for real:
    `/auth/microsoft`) in an actual browser — not curl, since this needs to
    run through a real login prompt.
 4. After granting access, confirm you land back at `returnTo` (or `/`)
-   with a live session at `/auth/session`, and check `user_identities` in
-   MySQL to see the linked provider record.
+   with a live session at `/auth/session`, and check the `user_identities`
+   collection in MongoDB to see the linked provider record.
 
 ## Environment variables
 
@@ -377,14 +380,16 @@ To test for real:
 | `PORT` | HTTP port |
 | `ISSUER` | Canonical URL — becomes JWT `iss` and the base for OIDC discovery URLs |
 | `ALLOWED_ORIGINS` | Comma-separated CORS allow-list |
-| `DB_*` | MySQL connection details |
+| `MONGODB_URI` | MongoDB connection string, including the database name |
+| `MONGODB_POOL_MAX` | Optional, max MongoDB connections (default 10) |
 | `REDIS_*` | Redis connection details |
 | `SESSION_SECRET`, `SESSION_COOKIE_*` | Express session (SSO session) config |
 | `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` | RSA keypair paths (see `scripts/generate-keys.js`) |
 | `JWT_KEY_ID` | `kid` used in both the JWT header and the JWKS entry |
 | `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Token lifetimes |
 | `BCRYPT_SALT_ROUNDS` | Password hashing cost factor |
-| `RATE_LIMIT_*` | Global rate limiter thresholds |
+| `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX` | Global rate limiter: requests per IP per window (default 1000 per 15 min) |
+| `AUTH_RATE_LIMIT_MAX` | Login / signup / token endpoints: requests per IP per 15 min (default 1000) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | Google login — leave `GOOGLE_CLIENT_ID` unset to disable `/auth/google` entirely |
 | `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` / `MICROSOFT_CALLBACK_URL` / `MICROSOFT_TENANT` | Microsoft login — same opt-in behavior |
 | `MFA_ISSUER_NAME` | Label shown in the authenticator app next to the account |
@@ -394,18 +399,34 @@ To test for real:
 `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` from earlier iterations are
 gone: the former is replaced by the RSA keypair, and the latter was
 **dead from the start** — refresh tokens have always been opaque random
-strings stored (SHA-256 hashed) in MySQL, never JWTs.
+strings stored (SHA-256 hashed) in the database, never JWTs.
 
-## Database schema
+## Database (MongoDB)
 
-Applied by `npm run db:migrate` (`src/db/schema.sql`), seeded by `npm run
-db:seed` (`src/db/seed.sql` — 4 applications, 7 roles, a starter permission
-set; `oauth_clients` is deliberately not seeded there since secrets must be
-bcrypt-hashed through code, not inserted as plaintext SQL — use
-`scripts/create-client.js`).
+Collections, fields and indexes are defined in `src/db/schemas.js`.
+`npm run db:migrate` creates every collection and its indexes (unique
+email, username, client_id, ...) and never drops anything. `npm run db:seed`
+applies `src/db/seedData.js` (4 applications, 7 roles with their
+permissions, 9 permissions). Both are safe to re-run. `oauth_clients` is
+deliberately not seeded, since secrets must be bcrypt-hashed through code —
+use `scripts/create-client.js`.
 
-`refresh_tokens` includes a `scope VARCHAR(255) NULL` column (added after
-initial design, to support RFC 6749 §6 scope inheritance on refresh).
+Things that differ from the original MySQL version:
+- **Ids are MongoDB ObjectId strings** (e.g. `"671f3a2b9c1e4d5f6a7b8c9d"`),
+  so the JWT `sub` claim and every `id` in API responses is a 24-character
+  string, not a number. Booleans such as `mfa_enabled` and `is_active` are
+  `true`/`false` rather than `1`/`0`.
+- **Emails are stored lowercased and trimmed**, and looked up the same way
+  (MySQL's collation made them case-insensitive; MongoDB doesn't), so
+  `Dev@X.org ` and `dev@x.org` are one account. Usernames stay
+  case-insensitive through a collation index.
+- **Role permissions live on the role** (`roles.permissions` is an array of
+  permission codes) instead of a `role_permissions` join table.
+- **No foreign-key cascades**: deleting a role also deletes its
+  `user_roles` in `roleModel.remove`.
+
+`refresh_tokens` includes a `scope` field (added after initial design, to
+support RFC 6749 §6 scope inheritance on refresh).
 
 ## API endpoints
 
@@ -433,7 +454,7 @@ initial design, to support RFC 6749 §6 scope inheritance on refresh).
 | POST/DELETE | `/admin/roles/:id/permissions[/:code]` | Assign/remove permissions on a role |
 | GET | `/admin/permissions` | Reference list of all permissions |
 | GET | `/admin/sessions` | List active SSO sessions — requires `sessions.manage` |
-| DELETE | `/admin/sessions/:sessionId` | Force logout (kills the Redis session + MySQL mirror) |
+| DELETE | `/admin/sessions/:sessionId` | Force logout (kills the Redis session + its `user_sessions` record) |
 | GET | `/admin/audit-logs` | Paginated, filterable audit trail — requires `audit.view` |
 | GET | `/auth/google`, `/auth/microsoft` | Start social login — 501 if that provider isn't configured |
 | GET | `/auth/google/callback`, `/auth/microsoft/callback` | Provider redirects back here; establishes the SSO session |
@@ -452,7 +473,7 @@ table for it.
 ## npm packages
 
 `express`, `helmet`, `cors`, `cookie-parser`, `express-session`,
-`connect-redis`, `express-rate-limit`, `mysql2`, `ioredis`, `dotenv`,
+`connect-redis`, `express-rate-limit`, `mongoose`, `ioredis`, `dotenv`,
 `winston`, `uuid`, `bcrypt`, `jsonwebtoken`, `passport`, `passport-local`,
 `passport-google-oauth20`, `passport-oauth2` (used directly, hand-configured
 for Microsoft's v2.0 endpoints — see design notes). RS256 signing, JWK

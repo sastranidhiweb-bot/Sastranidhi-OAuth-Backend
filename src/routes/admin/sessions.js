@@ -28,8 +28,8 @@ router.delete(
     if (!session) throw new ApiError(404, 'not_found', 'Session not found');
 
     // Delete the live express-session in Redis (what actually forces the
-    // browser's next request to be unauthenticated) AND the MySQL mirror
-    // row (what the admin console lists) — they're two different stores
+    // browser's next request to be unauthenticated) AND the MongoDB mirror
+    // document (what the admin console lists) — they're two different stores
     // for the same fact, both need clearing.
     await sessionModel.deleteRedisSession(session.session_id);
     await sessionModel.remove(session.session_id);

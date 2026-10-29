@@ -32,18 +32,20 @@ async function main() {
     process.exit(1);
   }
 
+  await db.connect();
+
   const user = await userModel.findByEmail(args.email);
   if (!user) {
     console.error(`[promote-admin] No user with email "${args.email}". They need to register first.`);
     process.exit(1);
   }
 
-  // No applicationCode passed -> global role (application_id IS NULL),
+  // No applicationCode passed -> global role (application_id null),
   // which is exactly what requirePermission.js checks for admin access.
   await userRoleModel.assignRole({ userId: user.id, roleName });
 
   console.log(`[promote-admin] Granted global role "${roleName}" to ${user.email} (id ${user.id}).`);
-  await db.closePool();
+  await db.disconnect();
 }
 
 main().catch((err) => {

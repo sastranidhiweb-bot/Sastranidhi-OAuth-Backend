@@ -1,35 +1,41 @@
 // scripts/seed.js
 //
 // Usage: npm run db:seed  (run after npm run db:migrate)
-// Reads src/db/seed.sql and executes it against the database configured
-// in .env. Safe to re-run — every INSERT uses ON DUPLICATE KEY UPDATE.
+// Applies src/db/seedData.js to the MongoDB database named in MONGODB_URI.
+// Safe to re-run — every write is an upsert, and role permissions are only
+// ever added, never removed.
 
-const fs = require('fs');
-const path = require('path');
-const mysql = require('mysql2/promise');
-require('dotenv').config();
+const mongoose = require('mongoose');
+const db = require('../src/config/db');
+const { Application, Permission, Role } = require('../src/db/schemas');
+const seedData = require('../src/db/seedData');
 
 async function main() {
-  const sqlPath = path.join(__dirname, '..', 'src', 'db', 'seed.sql');
-  const sql = fs.readFileSync(sqlPath, 'utf8');
+  await db.connect();
+  console.log(`[seed] Connected to database "${mongoose.connection.name}"`);
 
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    multipleStatements: true,
-  });
+  for (const { code, name, base_url } of seedData.applications) {
+    await Application.updateOne({ code }, { $set: { name, base_url } }, { upsert: true });
+  }
 
-  console.log(`[seed] Connected to ${process.env.DB_NAME}@${process.env.DB_HOST}`);
-  console.log('[seed] Applying src/db/seed.sql ...');
+  for (const { permission_code, permission_name } of seedData.permissions) {
+    await Permission.updateOne({ permission_code }, { $set: { permission_name } }, { upsert: true });
+  }
 
-  await connection.query(sql);
+  for (const { name, description, permissions } of seedData.roles) {
+    await Role.updateOne(
+      { name },
+      { $set: { description }, $addToSet: { permissions: { $each: permissions } } },
+      { upsert: true }
+    );
+  }
 
-  console.log('[seed] Done. Seeded: applications, roles, permissions, role_permissions.');
-  console.log('[seed] Note: oauth_clients are NOT seeded here — see module 2 (scripts/create-client.js).');
-  await connection.end();
+  console.log(
+    `[seed] Done. Seeded: ${seedData.applications.length} applications, ${seedData.roles.length} roles, ` +
+      `${seedData.permissions.length} permissions.`
+  );
+  console.log('[seed] Note: oauth_clients are NOT seeded here — see scripts/create-client.js.');
+  await db.disconnect();
 }
 
 main().catch((err) => {

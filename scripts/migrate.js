@@ -1,35 +1,28 @@
 // scripts/migrate.js
 //
 // Usage: npm run db:migrate
-// Reads src/db/schema.sql and executes it statement-by-statement against
-// the database configured in .env. Safe to re-run (uses CREATE TABLE IF
-// NOT EXISTS throughout).
+// Creates every collection and its indexes (unique email, username,
+// client_id, ...) in the MongoDB database named in MONGODB_URI. Safe to
+// re-run: existing collections, indexes and documents are left as they
+// are, and nothing is ever dropped.
 
-const fs = require('fs');
-const path = require('path');
-const mysql = require('mysql2/promise');
-require('dotenv').config();
+const mongoose = require('mongoose');
+const db = require('../src/config/db');
+const schemas = require('../src/db/schemas');
 
 async function main() {
-  const sqlPath = path.join(__dirname, '..', 'src', 'db', 'schema.sql');
-  const sql = fs.readFileSync(sqlPath, 'utf8');
+  await db.connect();
+  console.log(`[migrate] Connected to database "${mongoose.connection.name}"`);
 
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    multipleStatements: true,
-  });
-
-  console.log(`[migrate] Connected to ${process.env.DB_NAME}@${process.env.DB_HOST}`);
-  console.log('[migrate] Applying src/db/schema.sql ...');
-
-  await connection.query(sql);
+  const models = Object.values(schemas).filter((value) => value && value.prototype instanceof mongoose.Model);
+  for (const model of models) {
+    await model.createCollection();
+    await model.createIndexes();
+    console.log(`[migrate]   ${model.collection.collectionName}: collection + indexes ready`);
+  }
 
   console.log('[migrate] Done.');
-  await connection.end();
+  await db.disconnect();
 }
 
 main().catch((err) => {

@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Environment files — contain passwords and API keys, never commit
+.env
+.env.*
+_env
+.env_example
+!.env.example
+
+# RSA signing keys (scripts/generate-keys.js)
+keys/
+
+# Logs (winston + pm2)
+logs/
+*.log

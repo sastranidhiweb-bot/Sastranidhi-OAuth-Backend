@@ -1,13 +1,18 @@
 // src/middleware/authRateLimiter.js
 //
-// Tighter than the global limiter — specifically for endpoints that are
-// attractive brute-force targets: /auth/login and /oauth/token.
+// A separate counter from the global limiter, specifically for endpoints
+// that are attractive brute-force targets: /auth/login, signup, password
+// reset and /oauth/token. Limits are per IP address, so they have to allow
+// for many users sharing one network (a classroom, a campus Wi-Fi) and for
+// a child app's server exchanging tokens on behalf of all its users.
+// Per-account protection comes from the 5-failed-logins lockout instead.
 
 const rateLimit = require('express-rate-limit');
+const env = require('../config/env');
 
 const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: env.security.authRateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

@@ -41,6 +41,8 @@ async function main() {
     process.exit(1);
   }
 
+  await db.connect();
+
   const application = await applicationModel.findByCode(args.app);
   if (!application) {
     console.error(`[create-client] No application with code "${args.app}". Run npm run db:seed first.`);
@@ -69,7 +71,7 @@ async function main() {
     '\n[create-client] Save the client_secret now — it is hashed in the database and cannot be retrieved again.\n'
   );
 
-  await db.closePool();
+  await db.disconnect();
 }
 
 main().catch((err) => {

@@ -1,39 +1,35 @@
 // src/models/refreshTokenModel.js
-const db = require('../config/db');
+const { RefreshToken } = require('../db/schemas');
+const { toObjectId, toPlain } = require('../utils/mongo');
 const { sha256Hex } = require('../utils/crypto');
 
 async function store({ userId, clientId, rawToken, scope, expiresAt }) {
-  const tokenHash = sha256Hex(rawToken);
-  await db.query(
-    `INSERT INTO refresh_tokens (user_id, client_id, token_hash, scope, expires_at)
-     VALUES (:userId, :clientId, :tokenHash, :scope, :expiresAt)`,
-    { userId, clientId, tokenHash, scope: scope || null, expiresAt }
-  );
-}
-
-async function findValidByRawToken(rawToken) {
-  const tokenHash = sha256Hex(rawToken);
-  const rows = await db.query(
-    `SELECT * FROM refresh_tokens
-     WHERE token_hash = :tokenHash AND revoked_at IS NULL AND expires_at > NOW()
-     LIMIT 1`,
-    { tokenHash }
-  );
-  return rows[0] || null;
-}
-
-async function revokeByRawToken(rawToken) {
-  const tokenHash = sha256Hex(rawToken);
-  await db.query('UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = :tokenHash', {
-    tokenHash,
+  await RefreshToken.create({
+    user_id: toObjectId(userId),
+    client_id: clientId,
+    token_hash: sha256Hex(rawToken),
+    scope: scope || null,
+    expires_at: expiresAt,
   });
 }
 
+async function findValidByRawToken(rawToken) {
+  if (typeof rawToken !== 'string') return null;
+  const token = await RefreshToken.findOne({
+    token_hash: sha256Hex(rawToken),
+    revoked_at: null,
+    expires_at: { $gt: new Date() },
+  }).lean();
+  return toPlain(token);
+}
+
+async function revokeByRawToken(rawToken) {
+  if (typeof rawToken !== 'string') return;
+  await RefreshToken.updateMany({ token_hash: sha256Hex(rawToken) }, { $set: { revoked_at: new Date() } });
+}
+
 async function revokeAllForUser(userId) {
-  await db.query(
-    'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = :userId AND revoked_at IS NULL',
-    { userId }
-  );
+  await RefreshToken.updateMany({ user_id: toObjectId(userId), revoked_at: null }, { $set: { revoked_at: new Date() } });
 }
 
 module.exports = { store, findValidByRawToken, revokeByRawToken, revokeAllForUser };

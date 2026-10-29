@@ -15,6 +15,7 @@ const emailVerificationModel = require('../models/emailVerificationModel');
 const emailService = require('./emailService');
 const stateToken = require('../utils/stateToken');
 const ApiError = require('../utils/ApiError');
+const normalizeEmail = require('../utils/normalizeEmail');
 
 const CODE_LENGTH = 6;
 const CODE_EXPIRES_MINUTES = 10;
@@ -34,7 +35,7 @@ function generateCode() {
   return crypto.randomInt(0, 10 ** CODE_LENGTH).toString().padStart(CODE_LENGTH, '0');
 }
 
-/** Starts (or restarts) email verification for an address. Enforces the resend cooldown; the new code replaces any previous one (schema.sql: one live row per email). */
+/** Starts (or restarts) email verification for an address. Enforces the resend cooldown; the new code replaces any previous one (db/schemas.js: one live document per email). */
 async function startVerification(email) {
   const existing = await emailVerificationModel.findByEmail(email);
 
@@ -101,14 +102,14 @@ function issueVerifiedToken(email) {
   // 15 minutes is enough to fill in the account-details step without the
   // proof going stale, but short enough that a leaked token (e.g. via a
   // shared/logged URL) is a narrow window, not a standing credential.
-  const token = stateToken.sign({ purpose: 'email_verified', email }, { expiresInSeconds: 15 * 60 });
+  const token = stateToken.sign({ purpose: 'email_verified', email: normalizeEmail(email) }, { expiresInSeconds: 15 * 60 });
   return { emailVerificationToken: token };
 }
 
 /** Used by POST /auth/register to confirm the token is real, unexpired, and for the exact email being registered. */
 function assertEmailVerified(token, email) {
   const decoded = stateToken.verify(token);
-  if (!decoded || decoded.purpose !== 'email_verified' || decoded.email !== email) {
+  if (!decoded || decoded.purpose !== 'email_verified' || decoded.email !== normalizeEmail(email)) {
     throw new ApiError(400, 'email_not_verified', 'This email has not been verified, or the verification has expired. Please verify your email again.');
   }
 }

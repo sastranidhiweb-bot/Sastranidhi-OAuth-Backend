@@ -1,26 +1,20 @@
 // src/models/oauthClientModel.js
-const db = require('../config/db');
+const { OAuthClient } = require('../db/schemas');
+const { toObjectId, toPlain } = require('../utils/mongo');
 
 async function findByClientId(clientId) {
-  const rows = await db.query(
-    'SELECT * FROM oauth_clients WHERE client_id = :clientId LIMIT 1',
-    { clientId }
-  );
-  return rows[0] || null;
+  if (typeof clientId !== 'string') return null;
+  return toPlain(await OAuthClient.findOne({ client_id: clientId }).lean());
 }
 
 async function create({ clientId, clientSecretHash, applicationId, redirectUris, scopes }) {
-  await db.query(
-    `INSERT INTO oauth_clients (client_id, client_secret_hash, application_id, redirect_uris, scopes)
-     VALUES (:clientId, :clientSecretHash, :applicationId, :redirectUris, :scopes)`,
-    {
-      clientId,
-      clientSecretHash,
-      applicationId,
-      redirectUris,
-      scopes: scopes || 'openid,profile,email',
-    }
-  );
+  await OAuthClient.create({
+    client_id: clientId,
+    client_secret_hash: clientSecretHash,
+    application_id: toObjectId(applicationId),
+    redirect_uris: redirectUris,
+    scopes: scopes || 'openid,profile,email',
+  });
   return findByClientId(clientId);
 }
 

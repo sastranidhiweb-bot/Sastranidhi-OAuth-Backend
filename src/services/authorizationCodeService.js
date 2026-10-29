@@ -1,7 +1,7 @@
 // src/services/authorizationCodeService.js
 //
 // Authorization codes are short-lived (60s) and single-use by design, so
-// Redis is the right store for them (not the audit-friendly MySQL tables) —
+// Redis is the right store for them (not the audit-friendly MongoDB collections) —
 // this mirrors the "SSO Session Store (Redis)" box in the architecture
 // diagram, which the auth-code exchange is logically part of.
 

@@ -9,11 +9,7 @@ require('dotenv').config();
 const REQUIRED_IN_ALL_ENVS = [
   'PORT',
   'ISSUER',
-  'DB_HOST',
-  'DB_PORT',
-  'DB_USER',
-  'DB_PASSWORD',
-  'DB_NAME',
+  'MONGODB_URI',
   'REDIS_HOST',
   'REDIS_PORT',
   'SESSION_SECRET',
@@ -43,14 +39,10 @@ const env = {
     .map((s) => s.trim())
     .filter(Boolean),
 
-  db: {
-    host: process.env.DB_HOST,
-    port: parseInt(process.env.DB_PORT, 10),
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    poolMin: parseInt(process.env.DB_POOL_MIN || '2', 10),
-    poolMax: parseInt(process.env.DB_POOL_MAX || '10', 10),
+  // The database name is part of the URI (the path after the host).
+  mongo: {
+    uri: process.env.MONGODB_URI,
+    poolMax: parseInt(process.env.MONGODB_POOL_MAX || '10', 10),
   },
 
   redis: {
@@ -78,7 +70,8 @@ const env = {
   security: {
     bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10),
     rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
-    rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+    rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '1000', 10),
+    authRateLimitMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '1000', 10),
   },
 
   // Optional -- a provider's strategy is only registered (see

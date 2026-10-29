@@ -1,34 +1,28 @@
 // src/models/passwordResetModel.js
-const db = require('../config/db');
+const { PasswordReset } = require('../db/schemas');
+const { toObjectId, toPlain } = require('../utils/mongo');
 
 async function create({ userId, tokenHash, expiresAt }) {
-  const result = await db.query(
-    `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (:userId, :tokenHash, :expiresAt)`,
-    { userId, tokenHash, expiresAt }
-  );
-  return result.insertId;
+  const reset = await PasswordReset.create({ user_id: toObjectId(userId), token_hash: tokenHash, expires_at: expiresAt });
+  return String(reset._id);
 }
 
 async function findValidByTokenHash(tokenHash) {
-  const rows = await db.query(
-    `SELECT * FROM password_resets
-     WHERE token_hash = :tokenHash AND used_at IS NULL AND expires_at > NOW()
-     LIMIT 1`,
-    { tokenHash }
-  );
-  return rows[0] || null;
+  const reset = await PasswordReset.findOne({
+    token_hash: tokenHash,
+    used_at: null,
+    expires_at: { $gt: new Date() },
+  }).lean();
+  return toPlain(reset);
 }
 
 async function markUsed(id) {
-  await db.query('UPDATE password_resets SET used_at = NOW() WHERE id = :id', { id });
+  await PasswordReset.updateOne({ _id: toObjectId(id) }, { $set: { used_at: new Date() } });
 }
 
 /** Invalidates any other still-live reset tokens for this user once one is successfully used — a stale, unused token from an earlier request shouldn't remain redeemable. */
 async function invalidateAllForUser(userId) {
-  await db.query(
-    'UPDATE password_resets SET used_at = NOW() WHERE user_id = :userId AND used_at IS NULL',
-    { userId }
-  );
+  await PasswordReset.updateMany({ user_id: toObjectId(userId), used_at: null }, { $set: { used_at: new Date() } });
 }
 
 module.exports = { create, findValidByTokenHash, markUsed, invalidateAllForUser };

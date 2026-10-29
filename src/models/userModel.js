@@ -1,53 +1,43 @@
 // src/models/userModel.js
-const db = require('../config/db');
+const { User, CASE_INSENSITIVE } = require('../db/schemas');
+const { toObjectId, toPlain, escapeRegex } = require('../utils/mongo');
+const normalizeEmail = require('../utils/normalizeEmail');
 
 async function findByEmail(email) {
-  const rows = await db.query('SELECT * FROM users WHERE email = :email LIMIT 1', { email });
-  return rows[0] || null;
+  if (typeof email !== 'string') return null;
+  return toPlain(await User.findOne({ email: normalizeEmail(email) }).lean());
 }
 
 async function findByUsername(username) {
-  const rows = await db.query('SELECT * FROM users WHERE username = :username LIMIT 1', {
-    username,
-  });
-  return rows[0] || null;
+  if (typeof username !== 'string') return null;
+  return toPlain(await User.findOne({ username: username.trim() }).collation(CASE_INSENSITIVE).lean());
 }
 
 async function findById(id) {
-  const rows = await db.query('SELECT * FROM users WHERE id = :id LIMIT 1', { id });
-  return rows[0] || null;
+  const _id = toObjectId(id);
+  if (!_id) return null;
+  return toPlain(await User.findById(_id).lean());
 }
 
 async function create({ email, username, passwordHash, firstName, lastName, mobile, emailVerifiedAt }) {
-  const result = await db.query(
-    `INSERT INTO users (email, username, password_hash, first_name, last_name, mobile, email_verified_at)
-     VALUES (:email, :username, :passwordHash, :firstName, :lastName, :mobile, :emailVerifiedAt)`,
-    {
-      email,
-      username,
-      passwordHash,
-      firstName: firstName || null,
-      lastName: lastName || null,
-      mobile: mobile || null,
-      emailVerifiedAt: emailVerifiedAt || null,
-    }
-  );
-  return findById(result.insertId);
+  const user = await User.create({
+    email: normalizeEmail(email),
+    username,
+    password_hash: passwordHash,
+    first_name: firstName || null,
+    last_name: lastName || null,
+    mobile: mobile || null,
+    email_verified_at: emailVerifiedAt || null,
+  });
+  return toPlain(user.toObject());
 }
 
 async function recordFailedLogin(userId, { lockUntil } = {}) {
+  const update = { $inc: { failed_login_attempts: 1 } };
   if (lockUntil) {
-    await db.query(
-      `UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = :lockUntil, status = 'locked'
-       WHERE id = :userId`,
-      { userId, lockUntil }
-    );
-  } else {
-    await db.query(
-      'UPDATE users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = :userId',
-      { userId }
-    );
+    update.$set = { locked_until: lockUntil, status: 'locked' };
   }
+  await User.updateOne({ _id: toObjectId(userId) }, update);
 }
 
 async function resetFailedLogins(userId) {
@@ -61,14 +51,9 @@ async function resetFailedLogins(userId) {
   // blocking inactive accounts (see config/passport.js), this function
   // should never even be reached for one — but it should be correct on its
   // own terms regardless of what calls it.
-  await db.query(
-    `UPDATE users SET
-       failed_login_attempts = 0,
-       locked_until = NULL,
-       status = IF(status = 'locked', 'active', status)
-     WHERE id = :userId`,
-    { userId }
-  );
+  const _id = toObjectId(userId);
+  await User.updateOne({ _id, status: 'locked' }, { $set: { status: 'active' } });
+  await User.updateOne({ _id }, { $set: { failed_login_attempts: 0, locked_until: null } });
 }
 
 // ------------------------------------------------------------------
@@ -78,58 +63,46 @@ async function resetFailedLogins(userId) {
 /** Paginated user list with optional search over email/username. */
 async function listPaginated({ page = 1, pageSize = 20, search } = {}) {
   const limit = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
-  const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
+  const currentPage = Math.max(parseInt(page, 10) || 1, 1);
+  const offset = (currentPage - 1) * limit;
 
-  const params = {};
-  let whereClause = '';
+  let filter = {};
   if (search) {
-    whereClause = 'WHERE email LIKE :search OR username LIKE :search';
-    params.search = `%${search}%`;
+    // Case-insensitive "contains", like the old SQL LIKE '%search%'.
+    const pattern = { $regex: escapeRegex(search), $options: 'i' };
+    filter = { $or: [{ email: pattern }, { username: pattern }] };
   }
 
-  // LIMIT/OFFSET are computed server-side integers (clamped above), not
-  // user-supplied strings, so string-interpolating them here is safe —
-  // mysql2 does not reliably support named placeholders inside LIMIT/OFFSET.
-  const rows = await db.query(
-    `SELECT * FROM users ${whereClause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
-    params
-  );
-  const [{ total }] = await db.query(`SELECT COUNT(*) AS total FROM users ${whereClause}`, params);
+  const [rows, total] = await Promise.all([
+    User.find(filter).sort({ created_at: -1, _id: -1 }).skip(offset).limit(limit).lean(),
+    User.countDocuments(filter),
+  ]);
 
-  return { rows, total, page: Math.max(parseInt(page, 10) || 1, 1), pageSize: limit };
+  return { rows: rows.map(toPlain), total, page: currentPage, pageSize: limit };
 }
 
+/** Only fields that were actually provided are changed (null/undefined keeps the current value). */
 async function updateProfile(userId, { firstName, lastName, mobile, profilePhoto }) {
-  await db.query(
-    `UPDATE users SET
-       first_name = COALESCE(:firstName, first_name),
-       last_name = COALESCE(:lastName, last_name),
-       mobile = COALESCE(:mobile, mobile),
-       profile_photo = COALESCE(:profilePhoto, profile_photo)
-     WHERE id = :userId`,
-    {
-      userId,
-      firstName: firstName ?? null,
-      lastName: lastName ?? null,
-      mobile: mobile ?? null,
-      profilePhoto: profilePhoto ?? null,
-    }
-  );
+  const changes = {};
+  if (firstName != null) changes.first_name = firstName;
+  if (lastName != null) changes.last_name = lastName;
+  if (mobile != null) changes.mobile = mobile;
+  if (profilePhoto != null) changes.profile_photo = profilePhoto;
+
+  if (Object.keys(changes).length > 0) {
+    await User.updateOne({ _id: toObjectId(userId) }, { $set: changes });
+  }
   return findById(userId);
 }
 
 async function setPasswordHash(userId, passwordHash) {
-  await db.query('UPDATE users SET password_hash = :passwordHash WHERE id = :userId', {
-    userId,
-    passwordHash,
-  });
+  await User.updateOne({ _id: toObjectId(userId) }, { $set: { password_hash: passwordHash } });
 }
 
 async function setStatus(userId, status) {
-  await db.query(
-    `UPDATE users SET status = :status, locked_until = NULL, failed_login_attempts = 0
-     WHERE id = :userId`,
-    { userId, status }
+  await User.updateOne(
+    { _id: toObjectId(userId) },
+    { $set: { status, locked_until: null, failed_login_attempts: 0 } }
   );
   return findById(userId);
 }
@@ -140,18 +113,15 @@ async function setStatus(userId, status) {
 
 /** Stores a newly-generated TOTP secret, but does NOT enable MFA yet — that only happens once the user proves they can generate a valid code from it (see routes/mfa.js verify-setup). */
 async function setPendingMfaSecret(userId, secretBase32) {
-  await db.query('UPDATE users SET mfa_secret = :secretBase32, mfa_enabled = 0 WHERE id = :userId', {
-    userId,
-    secretBase32,
-  });
+  await User.updateOne({ _id: toObjectId(userId) }, { $set: { mfa_secret: secretBase32, mfa_enabled: false } });
 }
 
 async function enableMfa(userId) {
-  await db.query('UPDATE users SET mfa_enabled = 1 WHERE id = :userId', { userId });
+  await User.updateOne({ _id: toObjectId(userId) }, { $set: { mfa_enabled: true } });
 }
 
 async function disableMfa(userId) {
-  await db.query('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = :userId', { userId });
+  await User.updateOne({ _id: toObjectId(userId) }, { $set: { mfa_enabled: false, mfa_secret: null } });
 }
 
 /** Strip sensitive fields before sending a user object back in any API response. */
